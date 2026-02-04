@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist SYSTEM "file://localhost/System/Library/DTDs/PropertyList.dtd">
+<plist version="0.9">
+<dict>
+	<key>Description</key>
+	<string>M-Audio Transit USB Configuration Service</string>
+	<key>Messages</key>
+	<dict>
+		<key>restart</key>
+		<string>Restarting M-Audio Transit USB Configuration Service</string>
+		<key>start</key>
+		<string>Starting M-Audio Transit USB Configuration Service</string>
+		<key>stop</key>
+		<string>Stopping M-Audio Transit USB Configuration Service</string>
+	</dict>
+	<key>OrderPreference</key>
+	<string>None</string>
+	<key>Provides</key>
+	<array>
+		<string>M-Audio Transit USB Configuration Service</string>
+	</array>
+	<key>Requires</key>
+	<array/>
+	<key>Uses</key>
+	<array/>
+</dict>
+</plist>

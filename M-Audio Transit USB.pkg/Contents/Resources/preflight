@@ -1,0 +1,144 @@
+#!/bin/sh
+ 
+IFS=
+PATH=
+ 
+# ================================================================================
+# Copyright © 2002-2003 Midiman, Inc.  All rights reserved.
+# ================================================================================
+ 
+# ================================================================================
+# Delete existing driver files (to prevent problems where the existing files may
+# contain subitems that really should be deleted).
+# ================================================================================
+ 
+# ================================================================================
+# Remove audio driver
+# ================================================================================
+ 
+/bin/echo "Removing \"/System/Library/Extensions/MAudioTransitUSBJag.kext\""
+if [ -e "/System/Library/Extensions/MAudioTransitUSBJag.kext" ]; then
+   if ! /bin/rm -R "/System/Library/Extensions/MAudioTransitUSBJag.kext"; then
+      /bin/echo "** FAILED ** /bin/rm -R \"/System/Library/Extensions/MAudioTransitUSBJag.kext\""
+      MM_FAILED="y"
+   fi
+else
+   /bin/echo "\"/System/Library/Extensions/MAudioTransitUSBJag.kext\" not found."
+fi
+ 
+/bin/echo "Removing \"/System/Library/Extensions/MAudioTransitUSB.kext\""
+if [ -e "/System/Library/Extensions/MAudioTransitUSB.kext" ]; then
+   if ! /bin/rm -R "/System/Library/Extensions/MAudioTransitUSB.kext"; then
+      /bin/echo "** FAILED ** /bin/rm -R \"/System/Library/Extensions/MAudioTransitUSB.kext\""
+      MM_FAILED="y"
+   fi
+else
+   /bin/echo "\"/System/Library/Extensions/MAudioTransitUSB.kext\" not found."
+fi
+ 
+/bin/echo "Removing \"/System/Library/Extensions/MAudioTransitUSBBoot.kext\""
+if [ -e "/System/Library/Extensions/MAudioTransitUSBBoot.kext" ]; then
+   if ! /bin/rm -R "/System/Library/Extensions/MAudioTransitUSBBoot.kext"; then
+      /bin/echo "** FAILED ** /bin/rm -R \"/System/Library/Extensions/MAudioTransitUSBBoot.kext\""
+      MM_FAILED="y"
+   fi
+else
+   /bin/echo "\"/System/Library/Extensions/MAudioTransitUSBBoot.kext\" not found."
+fi
+ 
+# ================================================================================
+# Remove preference pane item
+# ================================================================================
+ 
+/bin/echo "Removing \"/Library/PreferencePanes/MAudioTransitUSB.prefPane\""
+if [ -e "/Library/PreferencePanes/MAudioTransitUSB.prefPane" ]; then
+   if ! /bin/rm -R "/Library/PreferencePanes/MAudioTransitUSB.prefPane"; then
+      /bin/echo "** FAILED ** /bin/rm -R \"/Library/PreferencePanes/MAudioTransitUSB.prefPane\""
+      MM_FAILED="y"
+   fi
+else
+   /bin/echo "\"/Library/PreferencePanes/MAudioTransitUSB.prefPane\" not found."
+fi
+ 
+# ================================================================================
+# Remove startup item
+# ================================================================================
+ 
+/bin/echo "Removing \"/Library/StartupItems/MAudioTransitUSB\""
+if [ -e "/Library/StartupItems/MAudioTransitUSB" ]; then
+   if ! /bin/rm -R "/Library/StartupItems/MAudioTransitUSB"; then
+      /bin/echo "** FAILED ** /bin/rm -R \"/Library/StartupItems/MAudioTransitUSB\""
+      MM_FAILED="y"
+   fi
+else
+   /bin/echo "\"/Library/StartupItems/MAudioTransitUSB\" not found."
+fi
+ 
+# ================================================================================
+# Remove Firmware Loader
+# ================================================================================
+ 
+/bin/echo "Removing \"/Library/StartupItems/M-Audio Firmware Loader\""
+if [ -e "/Library/StartupItems/M-Audio Firmware Loader" ]; then
+   if ! /bin/rm -R "/Library/StartupItems/M-Audio Firmware Loader"; then
+      /bin/echo "** FAILED ** /bin/rm -R \"/Library/StartupItems/M-Audio Firmware Loader\""
+      MM_FAILED="y"
+   fi
+else
+   /bin/echo "\"/Library/StartupItems/M-Audio Firmware Loader\" not found."
+fi
+ 
+# ================================================================================
+# Delete legacy driver files (these are no longer used).
+# ================================================================================
+ 
+/bin/echo "Removing \"/System/Library/Extensions/MAudioTransit.kext\""
+if [ -e "/System/Library/Extensions/MAudioTransit.kext" ]; then
+   if ! /bin/rm -R "/System/Library/Extensions/MAudioTransit.kext"; then
+      /bin/echo "** FAILED ** /bin/rm -R \"/System/Library/Extensions/MAudioTransit.kext\""
+      MM_FAILED="y"
+   fi
+else
+   /bin/echo "\"/System/Library/Extensions/MAudioTransit.kext\" not found."
+fi
+ 
+/bin/echo "Removing \"/System/Library/Extensions/MAudioTransitBoot.kext\""
+if [ -e "/System/Library/Extensions/MAudioTransitBoot.kext" ]; then
+   if ! /bin/rm -R "/System/Library/Extensions/MAudioTransitBoot.kext"; then
+      /bin/echo "** FAILED ** /bin/rm -R \"/System/Library/Extensions/MAudioTransitBoot.kext\""
+      MM_FAILED="y"
+   fi
+else
+   /bin/echo "\"/System/Library/Extensions/MAudioTransitBoot.kext\" not found."
+fi
+ 
+/bin/echo "Removing \"/System/Library/Extensions/MAudioTransitJag.kext\""
+if [ -e "/System/Library/Extensions/MAudioTransitJag.kext" ]; then
+   if ! /bin/rm -R "/System/Library/Extensions/MAudioTransitJag.kext"; then
+      /bin/echo "** FAILED ** /bin/rm -R \"/System/Library/Extensions/MAudioTransitJag.kext\""
+      MM_FAILED="y"
+   fi
+else
+   /bin/echo "\"/System/Library/Extensions/MAudioTransitJag.kext\" not found."
+fi
+ 
+/bin/echo "Removing \"/Library/PreferencePanes/MAudioTransit.prefPane\""
+if [ -e "/Library/PreferencePanes/MAudioTransit.prefPane" ]; then
+   if ! /bin/rm -R "/Library/PreferencePanes/MAudioTransit.prefPane"; then
+      /bin/echo "** FAILED ** /bin/rm -R \"/Library/PreferencePanes/MAudioTransit.prefPane\""
+      MM_FAILED="y"
+   fi
+else
+   /bin/echo "\"/Library/PreferencePanes/MAudioTransit.prefPane\" not found."
+fi
+ 
+/bin/echo "Removing \"/Library/StartupItems/MAudioTransit\""
+if [ -e "/Library/StartupItems/MAudioTransit" ]; then
+   if ! /bin/rm -R "/Library/StartupItems/MAudioTransit"; then
+      /bin/echo "** FAILED ** /bin/rm -R \"/Library/StartupItems/MAudioTransit\""
+      MM_FAILED="y"
+   fi
+else
+   /bin/echo "\"/Library/StartupItems/MAudioTransit\" not found."
+fi
+ 

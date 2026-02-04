@@ -1,0 +1,16 @@
+Title M-Audio Transit USB
+Version 1.8.0
+Description Audio driver for M-Audio Transit USB
+DefaultLocation /
+Diskname (null)
+DeleteWarning Are you sure?
+NeedsAuthorization YES
+DisableStop NO 
+UseUserMask NO 
+Application NO 
+Relocatable NO 
+Required YES
+InstallOnly NO 
+RequiresReboot YES
+InstallFat NO 
+rootVolumeOnly YES

@@ -1,0 +1,12 @@
+{
+	Description			= "M-Audio Firmware Loader";
+	Provides			= ("firmware loader for M-Audio devices");
+	Requires			= ("System Log");
+	Uses				= ();
+	OrderPreference		= "None";
+	Messages			=
+	{
+		start	= "Starting M-Audio Firmware Loader";
+		stop	= "Stopping M-Audio Firmware Loader";
+	};
+}

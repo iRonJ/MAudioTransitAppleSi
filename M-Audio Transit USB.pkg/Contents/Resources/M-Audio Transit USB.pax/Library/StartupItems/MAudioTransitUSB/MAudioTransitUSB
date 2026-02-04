@@ -1,0 +1,33 @@
+#!/bin/sh
+ 
+# ================================================================================
+# Copyright � 2002-2003 Midiman, Inc.  All rights reserved.
+# ================================================================================
+ 
+StartService()
+{
+   # Start the configuration service.
+   "/Library/StartupItems/MAudioTransitUSB/TransitUSBCS"&
+}
+ 
+StopService()
+{(
+   # Get PID of the background process.
+   pid=`/bin/ps -o pid,command -a -c | /usr/bin/sed 's/TransitUSBCS//p'`
+ 
+   # Kill the background process.
+   /bin/kill $pid
+)}
+ 
+RestartService()
+{
+   StopService
+   StartService
+}
+ 
+case $1 in
+   start) StartService;;
+   stop) StopService;;
+   restart) RestartService;;
+esac
+ 

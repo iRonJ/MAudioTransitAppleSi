@@ -1,0 +1,121 @@
+#!/bin/sh
+ 
+# ================================================================================
+# Copyright � 2002-2009 Avid Technology, Inc.  All rights reserved.
+# ================================================================================
+ 
+IFS=
+PATH=
+ 
+# ================================================================================
+# Update permissions for /System/Library/Extensions/MAudioTransitUSBJag.kext.
+# ================================================================================
+ 
+/bin/echo "/usr/sbin/chown -PR \"root:wheel\" \"/System/Library/Extensions/MAudioTransitUSBJag.kext\""
+if ! /usr/sbin/chown -PR "root:wheel" "/System/Library/Extensions/MAudioTransitUSBJag.kext"; then
+   /bin/echo "** FAILED ChownEcho ** /usr/sbin/chown -PR \"root:wheel\" \"/System/Library/Extensions/MAudioTransitUSBJag.kext\""
+   MM_FAILED="y"
+fi
+ 
+/bin/echo "/usr/bin/find \"/System/Library/Extensions/MAudioTransitUSBJag.kext\" -type d -exec /bin/chmod \"0755\" {} \;"
+if ! /usr/bin/find "/System/Library/Extensions/MAudioTransitUSBJag.kext" -type d -exec /bin/chmod "0755" {} \;; then
+   /bin/echo "** FAILED ChmodDirsEcho ** /usr/bin/find \"/System/Library/Extensions/MAudioTransitUSBJag.kext\" -type d -exec /bin/chmod \"0755\" {} \;"
+   MM_FAILED="y"
+fi
+ 
+/bin/echo "/usr/bin/find \"/System/Library/Extensions/MAudioTransitUSBJag.kext\" -type f -exec /bin/chmod \"0644\" {} \;"
+if ! /usr/bin/find "/System/Library/Extensions/MAudioTransitUSBJag.kext" -type f -exec /bin/chmod "0644" {} \;; then
+   /bin/echo "** FAILED ChmodFilesEcho ** /usr/bin/find \"/System/Library/Extensions/MAudioTransitUSBJag.kext\" -type f -exec /bin/chmod \"0644\" {} \;"
+   MM_FAILED="y"
+fi
+ 
+# ================================================================================
+# Update permissions for /Library/PreferencePanes/MAudioTransitUSB.prefPane.
+# ================================================================================
+ 
+/bin/echo "/usr/sbin/chown -PR \"root:admin\" \"/Library/PreferencePanes/MAudioTransitUSB.prefPane\""
+if ! /usr/sbin/chown -PR "root:admin" "/Library/PreferencePanes/MAudioTransitUSB.prefPane"; then
+   /bin/echo "** FAILED ChownEcho ** /usr/sbin/chown -PR \"root:admin\" \"/Library/PreferencePanes/MAudioTransitUSB.prefPane\""
+   MM_FAILED="y"
+fi
+ 
+/bin/echo "/bin/chmod -R \"0755\" \"/Library/PreferencePanes/MAudioTransitUSB.prefPane\""
+if ! /bin/chmod -R "0755" "/Library/PreferencePanes/MAudioTransitUSB.prefPane"; then
+   /bin/echo "** FAILED ChmodEcho ** /bin/chmod -R \"0755\" \"/Library/PreferencePanes/MAudioTransitUSB.prefPane\""
+   MM_FAILED="y"
+fi
+ 
+# ================================================================================
+# Update permissions for /Library/StartupItems/MAudioTransitUSB.
+# ================================================================================
+ 
+/bin/echo "/usr/sbin/chown -PR \"root:wheel\" \"/Library/StartupItems/MAudioTransitUSB\""
+if ! /usr/sbin/chown -PR "root:wheel" "/Library/StartupItems/MAudioTransitUSB"; then
+   /bin/echo "** FAILED ChownEcho ** /usr/sbin/chown -PR \"root:wheel\" \"/Library/StartupItems/MAudioTransitUSB\""
+   MM_FAILED="y"
+fi
+ 
+/bin/echo "/bin/chmod -R \"0755\" \"/Library/StartupItems/MAudioTransitUSB\""
+if ! /bin/chmod -R "0755" "/Library/StartupItems/MAudioTransitUSB"; then
+   /bin/echo "** FAILED ChmodEcho ** /bin/chmod -R \"0755\" \"/Library/StartupItems/MAudioTransitUSB\""
+   MM_FAILED="y"
+fi
+ 
+# ================================================================================
+# Update permissions for M-Audio Firmware Loader.
+# ================================================================================
+ 
+/bin/echo "/usr/sbin/chown -PR \"root:wheel\" \"/Library/StartupItems/M-Audio Firmware Loader\""
+if ! /usr/sbin/chown -PR "root:wheel" "/Library/StartupItems/M-Audio Firmware Loader"; then
+   /bin/echo "** FAILED ChownEcho ** /usr/sbin/chown -PR \"root:wheel\" \"/Library/StartupItems/M-Audio Firmware Loader\""
+   MM_FAILED="y"
+fi
+ 
+/bin/echo "/bin/chmod -R \"0755\" \"/Library/StartupItems/M-Audio Firmware Loader\""
+if ! /bin/chmod -R "0755" "/Library/StartupItems/M-Audio Firmware Loader"; then
+   /bin/echo "** FAILED ChmodEcho ** /bin/chmod -R \"0755\" \"/Library/StartupItems/M-Audio Firmware Loader\""
+   MM_FAILED="y"
+fi
+ 
+# ================================================================================
+# Make sure that Extensions cache gets updated.
+# ================================================================================
+ 
+/bin/echo "/usr/bin/touch \"/System/Library/Extensions\""
+if ! /usr/bin/touch "/System/Library/Extensions"; then
+   /bin/echo "** FAILED ** /usr/bin/touch \"/System/Library/Extensions\""
+   MM_FAILED="y"
+fi
+ 
+# ================================================================================
+# Make sure that PreferencePanes cache gets updated.
+# ================================================================================
+ 
+/bin/echo "/usr/bin/touch \"/Library/PreferencePanes/MAudioCacheUpdateTrigger\""
+if ! /usr/bin/touch "/Library/PreferencePanes/MAudioCacheUpdateTrigger"; then
+   /bin/echo "** FAILED ** /usr/bin/touch \"/Library/PreferencePanes/MAudioCacheUpdateTrigger\""
+   MM_FAILED="y"
+fi
+ 
+/bin/echo "Removing \"/Library/PreferencePanes/MAudioCacheUpdateTrigger\""
+if [ -e "/Library/PreferencePanes/MAudioCacheUpdateTrigger" ]; then
+   if ! /bin/rm -R "/Library/PreferencePanes/MAudioCacheUpdateTrigger"; then
+      /bin/echo "** FAILED ** /bin/rm -R \"/Library/PreferencePanes/MAudioCacheUpdateTrigger\""
+      MM_FAILED="y"
+   fi
+else
+   /bin/echo "\"/Library/PreferencePanes/MAudioCacheUpdateTrigger\" not found."
+fi
+ 
+# ================================================================================
+# Create default plist settings for device.
+# ================================================================================
+ 
+"`/usr/bin/dirname $0`/InstallVersionToPrefsTool"
+ 
+# Check for errors and report if necessary
+if [ "y" = "$MM_FAILED" ]; then
+   /bin/echo "At least one failure occurred in the \"Installer/Transit/postflight.sh\" script"
+   exit 1
+fi
+ 
