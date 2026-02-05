@@ -1,0 +1,107 @@
+# M-Audio Transit Firmware Loader (macOS)
+
+This repo contains a working macOS firmware loader for the M-Audio Transit USB
+device. The implementation is based on the GHIDRA decompile in
+`ghirdaexport/`, and it now brings the device up as a USB Audio device
+(`0x0763:0x2006`).
+
+## What Worked (Final Flow)
+
+These steps match the GHIDRA decompile and are required for a successful load:
+
+1. **Match the device using IOKit, not libusb**.
+   - The device shows up as `IOUSBDevice` on older macOS and `IOUSBHostDevice`
+     on newer macOS. We try both.
+2. **Open the device and set the first configuration**.
+3. **Find the DFU interface number** and use it as `wIndex` for DFU requests.
+4. **Read the DFU Functional Descriptor** and use `wTransferSize`.
+5. **Use the 2-byte M-Audio firmware header** (big-endian version).
+   - Skip the update if the device `bcdDevice >= firmware version`.
+6. **Check for a DFU suffix**.
+   - If missing, swap the DFU poll timeout bytes (GHIDRA behavior).
+7. **DFU download**:
+   - `DFU_GETSTATUS` -> `DFU_CLRSTATUS` on error.
+   - Send all blocks with `DFU_DNLOAD` in `wTransferSize` chunks.
+   - Send the final **zero-length** DNLOAD packet.
+8. **Finalize using device re-enumeration**:
+   - GHIDRA calls the device vtable at +0x94, which matches
+     `USBDeviceReEnumerate(dev, 0)`.
+   - This is the key step that makes macOS see the audio device.
+
+After this, macOS prompts to allow the device and it enumerates as:
+
+```
+USB Vendor ID: 0x0763
+USB Product ID: 0x2006
+USB Product Version: 0x0101
+```
+
+## What Did Not Work (Earlier Attempts)
+
+These were tried and failed before aligning with the GHIDRA behavior:
+
+- **libusb/PyUSB**: timed out because it bypasses IOKit and the loader uses
+  IOKit-specific control transfers.
+- **Matching only `IOUSBDevice`**: failed on modern macOS where the class is
+  `IOUSBHostDevice`.
+- **Treating the firmware header as 20 bytes**: incorrect for this device.
+  The correct header is **2 bytes** (version).
+- **Skipping the DFU interface number**: DFU requests require `wIndex` set to
+  `bInterfaceNumber`.
+- **Using only `ResetDevice`**: firmware download succeeded but the device
+  stayed at `0x2806`. The correct call is `USBDeviceReEnumerate`.
+
+## Firmware Extraction
+
+Run the extractor to pull FIRM resources and name them correctly:
+
+```
+python3 extract_firmware.py
+```
+
+This creates files like:
+
+- `firmware_628.dfu.bin` (used for the loader mode device)
+- `firmware_320.dfu-app-mode.bin`
+- `firmware_110.cypress.bin`, etc.
+
+The loader auto-selects a firmware file based on the device product/version
+and the stream name (`dfu`), but you can also pass a path explicitly.
+
+## Build and Run
+
+```
+clang -framework IOKit -framework CoreFoundation -o maudio_iokit_loader maudio_iokit_loader.c
+sudo ./maudio_iokit_loader
+```
+
+Expected successful output includes:
+
+```
+Downloading firmware (5803 bytes in 91 blocks, 64 bytes/block)...
+Download complete (91 blocks)
+Finalizing...
+=== SUCCESS ===
+Device should re-enumerate to PID 0x2006.
+```
+
+Then verify:
+
+```
+system_profiler SPUSBDataType | grep -A6 0x2006
+```
+
+## Troubleshooting
+
+- If you see `bStatus=15 bState=10`, the device is in `dfuERROR`. Unplug the
+  device, wait 5 seconds, replug, and rerun the loader.
+- If it still enumerates as `0x2806`, check that `USBDeviceReEnumerate` is
+  called (present in the current loader) and give it ~10-15 seconds.
+- If it shows as `0x2006` but no audio device appears, that is likely a driver
+  or OS compatibility issue, not the firmware loader.
+
+## Key Files
+
+- `maudio_iokit_loader.c`: working macOS firmware loader.
+- `ghirdaexport/firmware_loader.c`: GHIDRA-based logic reference.
+- `extract_firmware.py`: firmware resource extractor.
