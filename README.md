@@ -100,6 +100,22 @@ system_profiler SPUSBDataType | grep -A6 0x2006
 - If it shows as `0x2006` but no audio device appears, that is likely a driver
   or OS compatibility issue, not the firmware loader.
 
+## Difference to Linux Loader
+
+The legacy Linux loader (`madfuload-1.2/madfuload.c`) is simpler and less
+device-specific. Compared to the macOS loader here:
+
+- It does **not** skip the 2‑byte M‑Audio firmware header.
+- It does **not** handle the DFU suffix (length adjustment).
+- It only waits using **byte 3** of `bwPollTimeout` (or not at all).
+- It does not track DFU state transitions (`DNLOAD_SYNC`, `DNBUSY`,
+  `MANIFEST_*`).
+- It always issues a plain `USBDEVFS_RESET` at the end (no
+  `USBDeviceReEnumerate`).
+
+In practice, the macOS loader’s extra steps are required to match the GHIDRA
+behavior and reliably re‑enumerate to `0x2006`.
+
 ## Key Files
 
 - `maudio_iokit_loader.c`: working macOS firmware loader.
