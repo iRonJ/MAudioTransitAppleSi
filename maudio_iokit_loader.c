@@ -19,9 +19,12 @@
 #define PRODUCT_ID_LOADER_SWAPPED 0x0628
 #define PRODUCT_ID_AUDIO 0x2006
 
+#define FIRMWARE_DIR "extracted boot_fw_maudio"
 #define DEFAULT_FIRMWARE_FILE "extracted_FIRM_301.bin"
 #define MAUDIO_HEADER_SIZE 2
 #define DFU_SUFFIX_LEN 0x12
+#define REENUMERATE_TIMEOUT_MS 15000
+#define REENUMERATE_POLL_MS 250
 
 #ifndef kIOUSBHostDeviceClassName
 #define kIOUSBHostDeviceClassName "IOUSBHostDevice"
@@ -216,16 +219,17 @@ static int choose_firmware_file(UInt16 product, UInt16 bcdDevice,
   UInt16 bcds[2] = {bcdDevice, swap16(bcdDevice)};
   for (int i = 0; i < 2; i++) {
     for (int j = 0; j < 2; j++) {
-      snprintf(out, out_len, "firmware_%x-%x.%s.bin", bcds[j], products[i],
-               stream);
+      snprintf(out, out_len, FIRMWARE_DIR "/firmware_%x-%x.%s.bin", bcds[j],
+               products[i], stream);
       if (file_exists(out))
         return 0;
     }
-    snprintf(out, out_len, "firmware_%x.%s.bin", products[i], stream);
+    snprintf(out, out_len, FIRMWARE_DIR "/firmware_%x.%s.bin", products[i],
+             stream);
     if (file_exists(out))
       return 0;
   }
-  snprintf(out, out_len, "%s", DEFAULT_FIRMWARE_FILE);
+  snprintf(out, out_len, FIRMWARE_DIR "/%s", DEFAULT_FIRMWARE_FILE);
   if (file_exists(out))
     return 0;
   return -1;
@@ -244,19 +248,99 @@ static io_iterator_t create_matching_iterator(const char *className) {
 }
 
 static io_service_t find_first_device(io_iterator_t iterator, UInt16 *product,
-                                      UInt16 *bcdDevice, UInt16 vendor) {
+                                      UInt16 *bcdDevice, UInt16 vendor,
+                                      UInt16 product_filter) {
   io_service_t usbDevice = IO_OBJECT_NULL;
   while ((usbDevice = IOIteratorNext(iterator))) {
     UInt16 idVendor = 0;
     if (get_uint16_property(usbDevice, CFSTR("idVendor"), &idVendor) == 0 &&
         idVendor == vendor) {
-      get_uint16_property(usbDevice, CFSTR("idProduct"), product);
-      get_uint16_property(usbDevice, CFSTR("bcdDevice"), bcdDevice);
+      UInt16 idProduct = 0;
+      get_uint16_property(usbDevice, CFSTR("idProduct"), &idProduct);
+      if (product_filter != 0 && idProduct != product_filter) {
+        IOObjectRelease(usbDevice);
+        continue;
+      }
+      if (product)
+        *product = idProduct;
+      if (bcdDevice)
+        get_uint16_property(usbDevice, CFSTR("bcdDevice"), bcdDevice);
       return usbDevice;
     }
     IOObjectRelease(usbDevice);
   }
   return IO_OBJECT_NULL;
+}
+
+static io_service_t find_device(UInt16 vendor, UInt16 product_filter,
+                                UInt16 *product, UInt16 *bcdDevice) {
+  io_service_t usbDevice = IO_OBJECT_NULL;
+  io_iterator_t iterator = create_matching_iterator(kIOUSBDeviceClassName);
+  if (iterator != IO_OBJECT_NULL) {
+    usbDevice =
+        find_first_device(iterator, product, bcdDevice, vendor, product_filter);
+    IOObjectRelease(iterator);
+    if (usbDevice)
+      return usbDevice;
+  }
+  iterator = create_matching_iterator(kIOUSBHostDeviceClassName);
+  if (iterator != IO_OBJECT_NULL) {
+    usbDevice =
+        find_first_device(iterator, product, bcdDevice, vendor, product_filter);
+    IOObjectRelease(iterator);
+  }
+  return usbDevice;
+}
+
+static io_service_t wait_for_device(UInt16 vendor, UInt16 product_filter,
+                                    UInt16 *product, UInt16 *bcdDevice,
+                                    int timeout_ms) {
+  int elapsed_ms = 0;
+  while (elapsed_ms < timeout_ms) {
+    io_service_t dev = find_device(vendor, product_filter, product, bcdDevice);
+    if (dev)
+      return dev;
+    usleep(REENUMERATE_POLL_MS * 1000);
+    elapsed_ms += REENUMERATE_POLL_MS;
+  }
+  return IO_OBJECT_NULL;
+}
+
+static IOUSBDeviceInterface **open_usb_device(io_service_t usbDevice) {
+  IOCFPlugInInterface **plugInInterface = NULL;
+  SInt32 score = 0;
+  IOUSBDeviceInterface **device = NULL;
+
+  kr = IOCreatePlugInInterfaceForService(
+      usbDevice, kIOUSBDeviceUserClientTypeID, kIOCFPlugInInterfaceID,
+      &plugInInterface, &score);
+  if (kr != kIOReturnSuccess || !plugInInterface)
+    return NULL;
+
+  kr = (*plugInInterface)
+           ->QueryInterface(plugInInterface,
+                            CFUUIDGetUUIDBytes(kIOUSBDeviceInterfaceID),
+                            (LPVOID *)&device);
+  (*plugInInterface)->Release(plugInInterface);
+  if (kr != kIOReturnSuccess || !device)
+    return NULL;
+  return device;
+}
+
+static void close_usb_device(IOUSBDeviceInterface **device) {
+  if (!device)
+    return;
+  (*device)->USBDeviceClose(device);
+  (*device)->Release(device);
+}
+
+static void apply_post_init_settings(IOUSBDeviceInterface **device) {
+  printf("Applying post-init settings...\n");
+  if (set_first_configuration(device) != 0) {
+    printf("  SetConfiguration failed (device may already be configured): %08x\n",
+           kr);
+  }
+  printf("  Post-init done (no extra device requests found in kext init).\n");
 }
 
 // DFU Protocol Implementation
@@ -550,18 +634,7 @@ int main(int argc, char *argv[]) {
   FILE *fp = NULL;
   unsigned char *fileData = NULL;
 
-  io_iterator_t iterator = create_matching_iterator(kIOUSBDeviceClassName);
-  if (iterator != IO_OBJECT_NULL) {
-    usbDevice = find_first_device(iterator, &product, &bcdDevice, VENDOR_ID);
-    IOObjectRelease(iterator);
-  }
-  if (!usbDevice) {
-    iterator = create_matching_iterator(kIOUSBHostDeviceClassName);
-    if (iterator != IO_OBJECT_NULL) {
-      usbDevice = find_first_device(iterator, &product, &bcdDevice, VENDOR_ID);
-      IOObjectRelease(iterator);
-    }
-  }
+  usbDevice = find_device(VENDOR_ID, 0, &product, &bcdDevice);
   if (!usbDevice) {
     fprintf(stderr, "Device not found. Is it connected and powered on?\n");
     return 1;
@@ -569,23 +642,9 @@ int main(int argc, char *argv[]) {
   printf("Device found! idProduct=0x%04x bcdDevice=0x%04x\n", product,
          bcdDevice);
 
-  IOCFPlugInInterface **plugInInterface = NULL;
-  SInt32 score;
-  kr = IOCreatePlugInInterfaceForService(
-      usbDevice, kIOUSBDeviceUserClientTypeID, kIOCFPlugInInterfaceID,
-      &plugInInterface, &score);
+  dev = open_usb_device(usbDevice);
   IOObjectRelease(usbDevice);
-  if (kr != kIOReturnSuccess || !plugInInterface) {
-    fprintf(stderr, "Creating plugin failed: %08x\n", kr);
-    goto cleanup;
-  }
-
-  kr = (*plugInInterface)
-           ->QueryInterface(plugInInterface,
-                            CFUUIDGetUUIDBytes(kIOUSBDeviceInterfaceID),
-                            (LPVOID *)&dev);
-  (*plugInInterface)->Release(plugInInterface);
-  if (kr != kIOReturnSuccess || !dev) {
+  if (!dev) {
     fprintf(stderr, "Interface failed: %08x\n", kr);
     goto cleanup;
   }
@@ -702,6 +761,35 @@ int main(int argc, char *argv[]) {
   if (result == 0) {
     printf("\n=== SUCCESS ===\n");
     printf("Device should re-enumerate to PID 0x2006.\n");
+    close_usb_device(dev);
+    dev = NULL;
+
+    printf("Waiting for re-enumeration...\n");
+    UInt16 audioProduct = 0;
+    UInt16 audioBcd = 0;
+    io_service_t audioDevice =
+        wait_for_device(VENDOR_ID, PRODUCT_ID_AUDIO, &audioProduct, &audioBcd,
+                        REENUMERATE_TIMEOUT_MS);
+    if (!audioDevice) {
+      printf("Timed out waiting for PID 0x%04x.\n", PRODUCT_ID_AUDIO);
+    } else {
+      printf("Reconnected: idProduct=0x%04x bcdDevice=0x%04x\n", audioProduct,
+             audioBcd);
+      IOUSBDeviceInterface **audioDev = open_usb_device(audioDevice);
+      IOObjectRelease(audioDevice);
+      if (!audioDev) {
+        printf("Post-init: failed to open audio device interface: %08x\n", kr);
+      } else {
+        kr = (*audioDev)->USBDeviceOpen(audioDev);
+        if (kr != kIOReturnSuccess) {
+          printf("Post-init: USBDeviceOpen failed: %08x\n", kr);
+          (*audioDev)->Release(audioDev);
+        } else {
+          apply_post_init_settings(audioDev);
+          close_usb_device(audioDev);
+        }
+      }
+    }
   } else {
     printf("\n=== FAILED ===\n");
   }
