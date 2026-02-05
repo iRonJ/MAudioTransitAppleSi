@@ -99,6 +99,12 @@ system_profiler SPUSBDataType | grep -A6 0x2006
   called (present in the current loader) and give it ~10-15 seconds.
 - If it shows as `0x2006` but no audio device appears, that is likely a driver
   or OS compatibility issue, not the firmware loader.
+- Known issue: **audio above 48 kHz can be garbled on analog output**.
+  The decompiled kext indicates the original driver used **packed 24‑bit**
+  (3‑byte) audio at higher sample rates to fit USB 1.1 bandwidth. The macOS
+  class driver may be sending 24‑bit with 32‑bit padding or selecting a
+  different alternate setting, which would explain the corruption. This points
+  to a **device firmware bit‑packing expectation** rather than the loader.
 
 ## Difference to Linux Loader
 
