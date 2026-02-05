@@ -13,6 +13,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <pthread.h>
+#include <limits.h>
 
 #define VENDOR_ID 0x0763
 #define PRODUCT_ID_LOADER 0x2806
@@ -65,6 +67,29 @@ typedef struct {
 IOUSBDeviceInterface **dev = NULL;
 kern_return_t kr;
 UInt8 interfaceNum = 0;
+static volatile int g_load_in_progress = 0;
+static const char *g_watch_firmware_override = NULL;
+static int g_watch_debug = 0;
+static const char *g_firmware_dir = NULL;
+
+static void watch_log(const char *msg, kern_return_t kret,
+                      const char *class_name) {
+  if (!g_watch_debug)
+    return;
+  if (kret == KERN_SUCCESS) {
+    printf("Watch: registered match for %s\n", class_name);
+  } else {
+    printf("Watch: failed to register match for %s: 0x%08x\n", class_name,
+           kret);
+  }
+  if (msg && msg[0] != '\0')
+    printf("%s\n", msg);
+}
+
+static int try_dfu_protocol(unsigned char *firmware, int size,
+                            unsigned short transfer_size, int swap_timeout,
+                            UInt16 product);
+static int dfu_detach(unsigned short timeout_ms);
 
 // Helpers
 static UInt16 swap16(UInt16 v) { return (UInt16)((v << 8) | (v >> 8)); }
@@ -215,21 +240,22 @@ static int file_exists(const char *path) {
 
 static int choose_firmware_file(UInt16 product, UInt16 bcdDevice,
                                 const char *stream, char *out, size_t out_len) {
+  const char *base_dir = g_firmware_dir ? g_firmware_dir : FIRMWARE_DIR;
   UInt16 products[2] = {product, swap16(product)};
   UInt16 bcds[2] = {bcdDevice, swap16(bcdDevice)};
   for (int i = 0; i < 2; i++) {
     for (int j = 0; j < 2; j++) {
-      snprintf(out, out_len, FIRMWARE_DIR "/firmware_%x-%x.%s.bin", bcds[j],
+      snprintf(out, out_len, "%s/firmware_%x-%x.%s.bin", base_dir, bcds[j],
                products[i], stream);
       if (file_exists(out))
         return 0;
     }
-    snprintf(out, out_len, FIRMWARE_DIR "/firmware_%x.%s.bin", products[i],
+    snprintf(out, out_len, "%s/firmware_%x.%s.bin", base_dir, products[i],
              stream);
     if (file_exists(out))
       return 0;
   }
-  snprintf(out, out_len, FIRMWARE_DIR "/%s", DEFAULT_FIRMWARE_FILE);
+  snprintf(out, out_len, "%s/%s", base_dir, DEFAULT_FIRMWARE_FILE);
   if (file_exists(out))
     return 0;
   return -1;
@@ -334,6 +360,25 @@ static void close_usb_device(IOUSBDeviceInterface **device) {
   (*device)->Release(device);
 }
 
+static kern_return_t open_usb_device_access(IOUSBDeviceInterface **device,
+                                            int allow_seize) {
+  const int max_attempts = 5;
+  for (int attempt = 0; attempt < max_attempts; attempt++) {
+    kr = (*device)->USBDeviceOpen(device);
+    if (kr == kIOReturnSuccess)
+      return kr;
+    if (kr == kIOReturnExclusiveAccess && allow_seize) {
+      kr = (*device)->USBDeviceOpenSeize(device);
+      if (kr == kIOReturnSuccess)
+        return kr;
+    }
+    if (kr != kIOReturnExclusiveAccess)
+      break;
+    usleep(100000);
+  }
+  return kr;
+}
+
 static void apply_post_init_settings(IOUSBDeviceInterface **device) {
   printf("Applying post-init settings...\n");
   if (set_first_configuration(device) != 0) {
@@ -341,6 +386,306 @@ static void apply_post_init_settings(IOUSBDeviceInterface **device) {
            kr);
   }
   printf("  Post-init done (no extra device requests found in kext init).\n");
+}
+
+static int load_firmware_for_service(io_service_t usbDevice,
+                                     const char *firmware_override,
+                                     int wait_for_reenum) {
+  UInt16 product = 0;
+  UInt16 bcdDevice = 0;
+  int result = 1;
+  FILE *fp = NULL;
+  unsigned char *fileData = NULL;
+
+  get_uint16_property(usbDevice, CFSTR("idProduct"), &product);
+  get_uint16_property(usbDevice, CFSTR("bcdDevice"), &bcdDevice);
+  printf("Device found! idProduct=0x%04x bcdDevice=0x%04x\n", product,
+         bcdDevice);
+
+  dev = open_usb_device(usbDevice);
+  if (!dev) {
+    fprintf(stderr, "Interface failed: %08x\n", kr);
+    return 1;
+  }
+
+  kr = open_usb_device_access(dev, 1);
+  if (kr != kIOReturnSuccess) {
+    fprintf(stderr, "Open failed: %08x\n", kr);
+    close_usb_device(dev);
+    dev = NULL;
+    return 1;
+  }
+  printf("Device opened.\n");
+
+  if (set_first_configuration(dev) != 0)
+    printf("SetConfiguration failed (may be OK): %08x\n", kr);
+  if (find_dfu_interface_number(dev, &interfaceNum) != 0) {
+    fprintf(stderr, "DFU interface not found.\n");
+    goto cleanup;
+  }
+  printf("DFU interface number: %u\n", interfaceNum);
+
+  DFUFunctionalDescriptor dfuDesc;
+  unsigned short transfer_size = 64;
+  unsigned short detach_timeout = 100;
+  if (get_dfu_functional_descriptor(dev, &dfuDesc) == 0) {
+    transfer_size = dfuDesc.wTransferSize;
+    if (transfer_size == 0)
+      transfer_size = 64;
+    detach_timeout = dfuDesc.wDetachTimeOut;
+    if (detach_timeout == 0)
+      detach_timeout = 100;
+    printf("DFU transfer size: %u bytes\n", transfer_size);
+  } else {
+    printf("DFU functional descriptor not found, using 64-byte blocks.\n");
+  }
+
+  char firmware_path[256];
+  if (firmware_override && firmware_override[0] != '\0') {
+    snprintf(firmware_path, sizeof(firmware_path), "%s", firmware_override);
+  } else if (choose_firmware_file(product, bcdDevice, "dfu", firmware_path,
+                                  sizeof(firmware_path)) != 0) {
+    fprintf(stderr, "Firmware file not found.\n");
+    goto cleanup;
+  }
+  printf("Using firmware file: %s\n", firmware_path);
+
+  fp = fopen(firmware_path, "rb");
+  if (!fp) {
+    fprintf(stderr, "Failed to open firmware file.\n");
+    goto cleanup;
+  }
+  fseek(fp, 0, SEEK_END);
+  long fileSize = ftell(fp);
+  fseek(fp, 0, SEEK_SET);
+  fileData = malloc(fileSize);
+  if (!fileData) {
+    fprintf(stderr, "Failed to allocate firmware buffer.\n");
+    goto cleanup;
+  }
+  if (fread(fileData, 1, fileSize, fp) != (size_t)fileSize) {
+    fprintf(stderr, "Failed to read firmware file.\n");
+    goto cleanup;
+  }
+  fclose(fp);
+  fp = NULL;
+
+  if (fileSize <= MAUDIO_HEADER_SIZE) {
+    fprintf(stderr, "Firmware file too small.\n");
+    goto cleanup;
+  }
+
+  UInt16 fw_version =
+      (UInt16)(((UInt16)fileData[0] << 8) | (UInt16)fileData[1]);
+  printf("Firmware header version: 0x%04x\n", fw_version);
+  if (bcdDevice >= fw_version) {
+    printf("Device firmware version 0x%04x is up to date.\n", bcdDevice);
+    result = 0;
+    goto cleanup;
+  }
+
+  unsigned char *firmware = fileData + MAUDIO_HEADER_SIZE;
+  int firmwareSize = (int)fileSize - MAUDIO_HEADER_SIZE;
+
+  const UInt8 *suffix = find_dfu_suffix(firmware, firmwareSize);
+  int swap_timeout = (suffix == NULL);
+  if (suffix && firmwareSize > DFU_SUFFIX_LEN) {
+    firmwareSize -= DFU_SUFFIX_LEN;
+  }
+
+  printf("Firmware: %ld bytes total, %d bytes payload\n", fileSize,
+         firmwareSize);
+  result = try_dfu_protocol(firmware, firmwareSize, transfer_size, swap_timeout,
+                            product);
+
+  if (result == -2) {
+    printf("Sending DFU_DETACH...\n");
+    if (dfu_detach(detach_timeout) == 0) {
+      unsigned short sleep_ms = (detach_timeout < 101) ? detach_timeout : 100;
+      if (sleep_ms)
+        usleep(sleep_ms * 1000);
+      kr = (*dev)->ResetDevice(dev);
+      if (kr != kIOReturnSuccess && kr != kIOReturnNotResponding &&
+          kr != kIOReturnNoDevice) {
+        printf("  ResetDevice: %08x\n", kr);
+      }
+    } else {
+      printf("  DFU_DETACH failed: %08x\n", kr);
+    }
+    result = 1;
+  }
+
+  if (result == 0) {
+    printf("\n=== SUCCESS ===\n");
+    printf("Device should re-enumerate to PID 0x2006.\n");
+    close_usb_device(dev);
+    dev = NULL;
+
+    if (wait_for_reenum) {
+      printf("Waiting for re-enumeration...\n");
+      UInt16 audioProduct = 0;
+      UInt16 audioBcd = 0;
+      io_service_t audioDevice =
+          wait_for_device(VENDOR_ID, PRODUCT_ID_AUDIO, &audioProduct,
+                          &audioBcd, REENUMERATE_TIMEOUT_MS);
+      if (!audioDevice) {
+        printf("Timed out waiting for PID 0x%04x.\n", PRODUCT_ID_AUDIO);
+      } else {
+        printf("Reconnected: idProduct=0x%04x bcdDevice=0x%04x\n", audioProduct,
+               audioBcd);
+        IOUSBDeviceInterface **audioDev = open_usb_device(audioDevice);
+        IOObjectRelease(audioDevice);
+        if (!audioDev) {
+          printf("Post-init: failed to open audio device interface: %08x\n",
+                 kr);
+        } else {
+        kr = open_usb_device_access(audioDev, 0);
+        if (kr != kIOReturnSuccess) {
+          printf("Post-init: USBDeviceOpen failed: %08x\n", kr);
+          (*audioDev)->Release(audioDev);
+          } else {
+            apply_post_init_settings(audioDev);
+            close_usb_device(audioDev);
+          }
+        }
+      }
+    }
+  } else {
+    printf("\n=== FAILED ===\n");
+  }
+
+cleanup:
+  if (fp)
+    fclose(fp);
+  if (fileData)
+    free(fileData);
+  if (dev) {
+    close_usb_device(dev);
+    dev = NULL;
+  }
+  return result;
+}
+
+typedef struct {
+  io_service_t service;
+  char firmware_override[256];
+  int has_override;
+} WatchTask;
+
+static void *watch_loader_thread(void *arg) {
+  WatchTask *task = (WatchTask *)arg;
+  const char *override_path = task->has_override ? task->firmware_override : NULL;
+  load_firmware_for_service(task->service, override_path, 1);
+  IOObjectRelease(task->service);
+  free(task);
+  __sync_lock_release(&g_load_in_progress);
+  return NULL;
+}
+
+static void device_matched(void *refCon, io_iterator_t iterator) {
+  (void)refCon;
+  io_service_t service;
+  while ((service = IOIteratorNext(iterator))) {
+    UInt16 idVendor = 0;
+    UInt16 idProduct = 0;
+    int have_vendor =
+        (get_uint16_property(service, CFSTR("idVendor"), &idVendor) == 0);
+    int have_product =
+        (get_uint16_property(service, CFSTR("idProduct"), &idProduct) == 0);
+    if (g_watch_debug) {
+      char name[128] = {0};
+      if (IORegistryEntryGetName(service, name) != KERN_SUCCESS) {
+        snprintf(name, sizeof(name), "unknown");
+      }
+      if (have_vendor && have_product) {
+        printf("Watch match: %s idVendor=0x%04x idProduct=0x%04x\n", name,
+               idVendor, idProduct);
+      } else {
+        printf("Watch match: %s (missing idVendor/idProduct)\n", name);
+      }
+    }
+    if (!have_vendor || idVendor != VENDOR_ID) {
+      if (g_watch_debug && have_vendor) {
+        printf("Watch: skip vendor 0x%04x\n", idVendor);
+      }
+      IOObjectRelease(service);
+      continue;
+    }
+    if (idProduct != PRODUCT_ID_LOADER &&
+        idProduct != PRODUCT_ID_LOADER_SWAPPED) {
+      if (g_watch_debug) {
+        printf("Watch: skip product 0x%04x\n", idProduct);
+      }
+      IOObjectRelease(service);
+      continue;
+    }
+    if (__sync_lock_test_and_set(&g_load_in_progress, 1)) {
+      printf("Load already in progress; skipping device.\n");
+      IOObjectRelease(service);
+      continue;
+    }
+    WatchTask *task = (WatchTask *)calloc(1, sizeof(*task));
+    if (!task) {
+      __sync_lock_release(&g_load_in_progress);
+      IOObjectRelease(service);
+      continue;
+    }
+    task->service = service;
+    if (g_watch_firmware_override && g_watch_firmware_override[0] != '\0') {
+      snprintf(task->firmware_override, sizeof(task->firmware_override), "%s",
+               g_watch_firmware_override);
+      task->has_override = 1;
+    }
+    pthread_t tid;
+    if (pthread_create(&tid, NULL, watch_loader_thread, task) != 0) {
+      __sync_lock_release(&g_load_in_progress);
+      IOObjectRelease(service);
+      free(task);
+      continue;
+    }
+    pthread_detach(tid);
+  }
+}
+
+static int start_watch_mode(const char *firmware_override) {
+  g_watch_firmware_override = firmware_override;
+  IONotificationPortRef notifyPort =
+      IONotificationPortCreate(kIOMainPortDefault);
+  if (!notifyPort) {
+    fprintf(stderr, "Failed to create notification port.\n");
+    return 1;
+  }
+  CFRunLoopSourceRef source =
+      IONotificationPortGetRunLoopSource(notifyPort);
+  CFRunLoopAddSource(CFRunLoopGetCurrent(), source, kCFRunLoopDefaultMode);
+
+  CFMutableDictionaryRef match = IOServiceMatching(kIOUSBDeviceClassName);
+  if (match) {
+    io_iterator_t iter = IO_OBJECT_NULL;
+    kr = IOServiceAddMatchingNotification(
+        notifyPort, kIOMatchedNotification, match, device_matched, NULL, &iter);
+    watch_log(NULL, kr, kIOUSBDeviceClassName);
+    if (kr == KERN_SUCCESS) {
+      device_matched(NULL, iter);
+    }
+  }
+
+  match = IOServiceMatching(kIOUSBHostDeviceClassName);
+  if (match) {
+    io_iterator_t iter = IO_OBJECT_NULL;
+    kr = IOServiceAddMatchingNotification(
+        notifyPort, kIOMatchedNotification, match, device_matched, NULL, &iter);
+    watch_log(NULL, kr, kIOUSBHostDeviceClassName);
+    if (kr == KERN_SUCCESS) {
+      device_matched(NULL, iter);
+    }
+  }
+
+  if (g_watch_debug)
+    printf("Watch debug enabled.\n");
+  printf("Watch mode enabled. Waiting for device...\n");
+  CFRunLoopRun();
+  return 0;
 }
 
 // DFU Protocol Implementation
@@ -624,184 +969,49 @@ static int try_dfu_protocol(unsigned char *firmware, int size,
 }
 
 int main(int argc, char *argv[]) {
+  setvbuf(stdout, NULL, _IONBF, 0);
+  setvbuf(stderr, NULL, _IONBF, 0);
   printf("M-Audio Transit Firmware Loader (v2 - Cleaned)\n");
   printf("====================================================\n");
 
-  io_service_t usbDevice = IO_OBJECT_NULL;
-  UInt16 product = 0;
-  UInt16 bcdDevice = 0;
-  int result = 1;
-  FILE *fp = NULL;
-  unsigned char *fileData = NULL;
+  int watch_mode = 0;
+  int debug_mode = 0;
+  const char *firmware_override = NULL;
+  const char *firmware_dir = NULL;
 
-  usbDevice = find_device(VENDOR_ID, 0, &product, &bcdDevice);
+  for (int i = 1; i < argc; i++) {
+    if (strcmp(argv[i], "--watch") == 0 || strcmp(argv[i], "-w") == 0) {
+      watch_mode = 1;
+    } else if (strcmp(argv[i], "--debug") == 0) {
+      debug_mode = 1;
+    } else if (strcmp(argv[i], "--firmware-dir") == 0 && i + 1 < argc) {
+      firmware_dir = argv[++i];
+    } else {
+      firmware_override = argv[i];
+    }
+  }
+
+  if (!firmware_dir) {
+    const char *env_dir = getenv("MAUDIO_FW_DIR");
+    if (env_dir && env_dir[0] != '\0')
+      firmware_dir = env_dir;
+  }
+  g_firmware_dir = firmware_dir;
+
+  if (watch_mode) {
+    g_watch_debug = debug_mode;
+    if (g_watch_debug && g_firmware_dir && g_firmware_dir[0] != '\0') {
+      printf("Watch: using firmware dir: %s\n", g_firmware_dir);
+    }
+    return start_watch_mode(firmware_override);
+  }
+
+  io_service_t usbDevice = find_device(VENDOR_ID, 0, NULL, NULL);
   if (!usbDevice) {
     fprintf(stderr, "Device not found. Is it connected and powered on?\n");
     return 1;
   }
-  printf("Device found! idProduct=0x%04x bcdDevice=0x%04x\n", product,
-         bcdDevice);
-
-  dev = open_usb_device(usbDevice);
+  int result = load_firmware_for_service(usbDevice, firmware_override, 1);
   IOObjectRelease(usbDevice);
-  if (!dev) {
-    fprintf(stderr, "Interface failed: %08x\n", kr);
-    goto cleanup;
-  }
-
-  kr = (*dev)->USBDeviceOpen(dev);
-  if (kr != kIOReturnSuccess) {
-    fprintf(stderr, "Open failed: %08x\n", kr);
-    (*dev)->Release(dev);
-    dev = NULL;
-    goto cleanup;
-  }
-  printf("Device opened.\n");
-
-  if (set_first_configuration(dev) != 0)
-    printf("SetConfiguration failed (may be OK): %08x\n", kr);
-  if (find_dfu_interface_number(dev, &interfaceNum) != 0) {
-    fprintf(stderr, "DFU interface not found.\n");
-    goto cleanup;
-  }
-  printf("DFU interface number: %u\n", interfaceNum);
-
-  DFUFunctionalDescriptor dfuDesc;
-  unsigned short transfer_size = 64;
-  unsigned short detach_timeout = 100;
-  if (get_dfu_functional_descriptor(dev, &dfuDesc) == 0) {
-    transfer_size = dfuDesc.wTransferSize;
-    if (transfer_size == 0)
-      transfer_size = 64;
-    detach_timeout = dfuDesc.wDetachTimeOut;
-    if (detach_timeout == 0)
-      detach_timeout = 100;
-    printf("DFU transfer size: %u bytes\n", transfer_size);
-  } else {
-    printf("DFU functional descriptor not found, using 64-byte blocks.\n");
-  }
-
-  char firmware_path[256];
-  if (argc > 1) {
-    snprintf(firmware_path, sizeof(firmware_path), "%s", argv[1]);
-  } else if (choose_firmware_file(product, bcdDevice, "dfu", firmware_path,
-                                  sizeof(firmware_path)) != 0) {
-    fprintf(stderr, "Firmware file not found.\n");
-    goto cleanup;
-  }
-  printf("Using firmware file: %s\n", firmware_path);
-
-  fp = fopen(firmware_path, "rb");
-  if (!fp) {
-    fprintf(stderr, "Failed to open firmware file.\n");
-    goto cleanup;
-  }
-  fseek(fp, 0, SEEK_END);
-  long fileSize = ftell(fp);
-  fseek(fp, 0, SEEK_SET);
-  fileData = malloc(fileSize);
-  if (!fileData) {
-    fprintf(stderr, "Failed to allocate firmware buffer.\n");
-    goto cleanup;
-  }
-  if (fread(fileData, 1, fileSize, fp) != (size_t)fileSize) {
-    fprintf(stderr, "Failed to read firmware file.\n");
-    goto cleanup;
-  }
-  fclose(fp);
-  fp = NULL;
-
-  if (fileSize <= MAUDIO_HEADER_SIZE) {
-    fprintf(stderr, "Firmware file too small.\n");
-    goto cleanup;
-  }
-
-  UInt16 fw_version =
-      (UInt16)(((UInt16)fileData[0] << 8) | (UInt16)fileData[1]);
-  printf("Firmware header version: 0x%04x\n", fw_version);
-  if (bcdDevice >= fw_version) {
-    printf("Device firmware version 0x%04x is up to date.\n", bcdDevice);
-    result = 0;
-    goto cleanup;
-  }
-
-  unsigned char *firmware = fileData + MAUDIO_HEADER_SIZE;
-  int firmwareSize = (int)fileSize - MAUDIO_HEADER_SIZE;
-
-  // Check suffix
-  const UInt8 *suffix = find_dfu_suffix(firmware, firmwareSize);
-  int swap_timeout = (suffix == NULL); // This logic came from user's code,
-                                       // assuming no suffix means old device?
-  if (suffix && firmwareSize > DFU_SUFFIX_LEN) {
-    firmwareSize -= DFU_SUFFIX_LEN;
-  }
-
-  printf("Firmware: %ld bytes total, %d bytes payload\n", fileSize,
-         firmwareSize);
-  result = try_dfu_protocol(firmware, firmwareSize, transfer_size, swap_timeout,
-                            product);
-
-  if (result == -2) {
-    printf("Sending DFU_DETACH...\n");
-    if (dfu_detach(detach_timeout) == 0) {
-      unsigned short sleep_ms = (detach_timeout < 101) ? detach_timeout : 100;
-      if (sleep_ms)
-        usleep(sleep_ms * 1000);
-      kr = (*dev)->ResetDevice(dev);
-      if (kr != kIOReturnSuccess && kr != kIOReturnNotResponding &&
-          kr != kIOReturnNoDevice) {
-        printf("  ResetDevice: %08x\n", kr);
-      }
-    } else {
-      printf("  DFU_DETACH failed: %08x\n", kr);
-    }
-    result = 1;
-  }
-
-  if (result == 0) {
-    printf("\n=== SUCCESS ===\n");
-    printf("Device should re-enumerate to PID 0x2006.\n");
-    close_usb_device(dev);
-    dev = NULL;
-
-    printf("Waiting for re-enumeration...\n");
-    UInt16 audioProduct = 0;
-    UInt16 audioBcd = 0;
-    io_service_t audioDevice =
-        wait_for_device(VENDOR_ID, PRODUCT_ID_AUDIO, &audioProduct, &audioBcd,
-                        REENUMERATE_TIMEOUT_MS);
-    if (!audioDevice) {
-      printf("Timed out waiting for PID 0x%04x.\n", PRODUCT_ID_AUDIO);
-    } else {
-      printf("Reconnected: idProduct=0x%04x bcdDevice=0x%04x\n", audioProduct,
-             audioBcd);
-      IOUSBDeviceInterface **audioDev = open_usb_device(audioDevice);
-      IOObjectRelease(audioDevice);
-      if (!audioDev) {
-        printf("Post-init: failed to open audio device interface: %08x\n", kr);
-      } else {
-        kr = (*audioDev)->USBDeviceOpen(audioDev);
-        if (kr != kIOReturnSuccess) {
-          printf("Post-init: USBDeviceOpen failed: %08x\n", kr);
-          (*audioDev)->Release(audioDev);
-        } else {
-          apply_post_init_settings(audioDev);
-          close_usb_device(audioDev);
-        }
-      }
-    }
-  } else {
-    printf("\n=== FAILED ===\n");
-  }
-
-cleanup:
-  if (fp)
-    fclose(fp);
-  if (fileData)
-    free(fileData);
-  if (dev) {
-    (*dev)->USBDeviceClose(dev);
-    (*dev)->Release(dev);
-  }
   return result;
 }

@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>com.maudio.transit.fwloader</string>
+    <key>ProgramArguments</key>
+    <array>
+      <string>/usr/local/bin/maudio_iokit_loader</string>
+      <string>--watch</string>
+      <string>--firmware-dir</string>
+      <string>__FW_DIR__</string>
+      <string>__DEBUG_FLAG__</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/var/log/maudio_iokit_loader.log</string>
+    <key>StandardErrorPath</key>
+    <string>/var/log/maudio_iokit_loader.log</string>
+  </dict>
+</plist>

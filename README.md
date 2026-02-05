@@ -91,6 +91,61 @@ Then verify:
 system_profiler SPUSBDataType | grep -A6 0x2006
 ```
 
+## Auto‑Load on Plug‑In (User‑Level)
+
+```
+make
+make install
+```
+
+This installs the loader to `~/.local/bin/maudio_iokit_loader` and installs a
+LaunchAgent at `~/Library/LaunchAgents/com.maudio.transit.fwloader.plist` to run
+in `--watch` mode (IOKit match notifications, no polling). It also copies firmware into
+`~/Library/Application Support/MaudioTransit/firmware`. Logs go to
+`~/Library/Logs/maudio_iokit_loader.log`.
+
+To remove:
+
+```
+make uninstall
+```
+
+Optional flags:
+
+```
+make install WATCH_DEBUG=1
+make install FW_DIR_SRC="$PWD/extracted boot_fw_maudio"
+```
+
+## Auto‑Load on Plug‑In (System‑Level)
+
+If you need root‑level access (or want the loader to run even when no user is
+logged in), use the system LaunchDaemon:
+
+```
+make
+sudo make install-system
+```
+
+Remove it with:
+
+```
+sudo make uninstall-system
+```
+
+The system install copies firmware into
+`/Library/Application Support/MaudioTransit/firmware`.
+
+## Manual Watch Mode
+
+```
+./bin/maudio_iokit_loader --watch --debug
+./bin/maudio_iokit_loader --watch --firmware-dir "extracted boot_fw_maudio"
+```
+
+`--watch` uses IOKit match notifications (no polling). `--debug` logs every
+matched USB device with vendor/product IDs.
+
 ## Troubleshooting
 
 - If you see `bStatus=15 bState=10`, the device is in `dfuERROR`. Unplug the

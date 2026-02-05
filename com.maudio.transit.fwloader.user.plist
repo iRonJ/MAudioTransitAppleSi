@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>com.maudio.transit.fwloader</string>
+    <key>ProgramArguments</key>
+    <array>
+      <string>__BIN_PATH__</string>
+      <string>--watch</string>
+      <string>--firmware-dir</string>
+      <string>__FW_DIR__</string>
+      <string>__DEBUG_FLAG__</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>__LOG_PATH__</string>
+    <key>StandardErrorPath</key>
+    <string>__LOG_PATH__</string>
+  </dict>
+</plist>
